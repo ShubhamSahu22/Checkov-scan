@@ -1,4 +1,3 @@
-# Buildspec runs in the build stage of your pipeline.
 version: 0.2
 phases:
   install:
@@ -7,70 +6,84 @@ phases:
     commands:
       - echo "Installing Checkov..."
       - pip install checkov
-      - echo "cd into $CODEBUILD_SRC_DIR"
+      - echo "Changing directory to $CODEBUILD_SRC_DIR"
       - cd $CODEBUILD_SRC_DIR
-      # Download the copilot linux binary.
+      # Download the Copilot Linux binary.
+      - echo "Downloading Copilot CLI..."
       - wget -q https://ecs-cli-v2-release.s3.amazonaws.com/copilot-linux-v1.34.0 -O copilot-linux
       - chmod +x ./copilot-linux
+
   build:
     commands:
       - echo "Running Checkov scan..."
       - checkov -d . --quiet
       - echo "Checkov scan complete."
-      - echo "Run your tests"
+      # Uncomment the next line to run your tests
       # - make test
+
   post_build:
     commands:
-      - echo "Build phase complete. Artifacts are ready."
+      - echo "Build phase complete. Preparing artifacts..."
       - ls -l
       - export COLOR="false"
       - export CI="true"
+      
+      # Parse the pipeline manifest
       - pipeline=$(cat $CODEBUILD_SRC_DIR/copilot/pipelines/checkov-scan-main/manifest.yml | ruby -ryaml -rjson -e 'puts JSON.pretty_generate(YAML.load(ARGF))')
+      
+      # Extract environments from pipeline
       - pl_envs=$(echo $pipeline | jq -r '.stages[].name')
-      # Find all the local services in the workspace.
+      
+      # Find all local services in the workspace
       - svc_ls_result=$(./copilot-linux svc ls --local --json)
       - svc_list=$(echo $svc_ls_result | jq '.services')
-      - >
-        if [ ! "$svc_list" = null ]; then
-          svcs=$(echo $svc_ls_result | jq -r '.services[].name');
+      - |
+        if [ "$svc_list" != "null" ]; then
+          svcs=$(echo $svc_ls_result | jq -r '.services[].name')
         fi
-      # Find all the local jobs in the workspace.
+      
+      # Find all local jobs in the workspace
       - job_ls_result=$(./copilot-linux job ls --local --json)
       - job_list=$(echo $job_ls_result | jq '.jobs')
-      - >
-        if [ ! "$job_list" = null ]; then
-          jobs=$(echo $job_ls_result | jq -r '.jobs[].name');
+      - |
+        if [ "$job_list" != "null" ]; then
+          jobs=$(echo $job_ls_result | jq -r '.jobs[].name')
         fi
-      # Raise error if no services or jobs are found.
-      - >
-        if [ "$svc_list" = null ] && [ "$job_list" = null ]; then
-          echo "No services or jobs found for the pipeline to deploy. Please create at least one service or job and push the manifest to the remote." 1>&2;
-          exit 1;
+      
+      # Error if no services or jobs found
+      - |
+        if [ "$svc_list" == "null" ] && [ "$job_list" == "null" ]; then
+          echo "No services or jobs found for the pipeline to deploy. Please create at least one service or job and push the manifest to the remote." 1>&2
+          exit 1
         fi
-      # Generate the cloudformation templates.
-      # The tag is the build ID but we replaced the colon ':' with a dash '-'.
-      # We truncate the tag (from the front) to 128 characters, the limit for Docker tags
-      # (https://docs.docker.com/engine/reference/commandline/tag/)
-      # Check if the `svc package` commanded exited with a non-zero status. If so, echo error msg and exit.
-      - >
+      
+      # Generate CloudFormation templates for each service/job and environment
+      - |
         for env in $pl_envs; do
           tag=$(echo ${CODEBUILD_BUILD_ID##*:}-$env | sed 's/:/-/g' | rev | cut -c 1-128 | rev)
+          
+          # Package services
           for svc in $svcs; do
-          ./copilot-linux svc package -n $svc -e $env --output-dir './infrastructure' --tag $tag --upload-assets;
-          if [ $? -ne 0 ]; then
-            echo "Cloudformation stack and config files were not generated. Please check build logs to see if there was a manifest validation error." 1>&2;
-            exit 1;
-          fi
-          done;
+            ./copilot-linux svc package -n $svc -e $env --output-dir './infrastructure' --tag $tag --upload-assets
+            if [ $? -ne 0 ]; then
+              echo "CloudFormation stack and config files were not generated. Please check build logs for errors." 1>&2
+              exit 1
+            fi
+          done
+          
+          # Package jobs
           for job in $jobs; do
-          ./copilot-linux job package -n $job -e $env --output-dir './infrastructure' --tag $tag --upload-assets;
-          if [ $? -ne 0 ]; then
-            echo "Cloudformation stack and config files were not generated. Please check build logs to see if there was a manifest validation error." 1>&2;
-            exit 1;
-          fi
-          done;
-        done;
+            ./copilot-linux job package -n $job -e $env --output-dir './infrastructure' --tag $tag --upload-assets
+            if [ $? -ne 0 ]; then
+              echo "CloudFormation stack and config files were not generated. Please check build logs for errors." 1>&2
+              exit 1
+            fi
+          done
+        done
+      
+      - echo "CloudFormation templates generated successfully."
       - ls -lah ./infrastructure
+
 artifacts:
   files:
     - "**/*"
