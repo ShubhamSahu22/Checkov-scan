@@ -16,7 +16,7 @@ phases:
   build:
     commands:
       - echo "Running Checkov scan..."
-      - checkov -d . --quiet
+      - checkov -d . 
       - echo "Checkov scan complete."
       # Uncomment the next line to run your tests
       # - make test
@@ -87,4 +87,4 @@ phases:
 artifacts:
   files:
     - "**/*"
-    - "infrastructure/*"
+    - "path/to/infrastructure/*"  # Adjust path if necessary
